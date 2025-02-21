@@ -1,0 +1,3 @@
+entsoe-py
+pandas
+requests

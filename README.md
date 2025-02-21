@@ -15,3 +15,9 @@ This repository provides additional queries for the [entsoe-py](https://github.c
    ```bash
    git clone https://github.com/your-github-username/entsoe-queries.git
    cd entsoe-queries
+
+2. **Install dependencies:**
+
+   ```bash
+   pip install -r requirements.txt
+   ```
