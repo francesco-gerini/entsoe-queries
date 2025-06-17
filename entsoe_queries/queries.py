@@ -241,6 +241,80 @@ def post_process(aFRR_bids):
     return aFRR_bids_postprocessed
 
 
+############################ aFRR CBMPs ###########################
+
+def query_aFRR_CBMPs(client_raw, start: datetime, end: datetime, lfc_area: str = '10YFR-RTE------C'):
+    """
+    Query Cross-Border Marginal Prices (CBMPs) for aFRR standard product via ENTSOE REST API.
+    
+    Parameters:
+        client_raw: instance with _base_request(params, start, end) method
+        start, end: timezone-aware datetimes defining the query window
+        lfc_area: EIC code of the control/LFC area
+    
+    Returns:
+        DataFrame with columns:
+         - PeriodStart (datetime), PeriodEnd (datetime),
+         - Direction (Up/Down), Price (EUR/MWh), LFC_Area (string)
+    """
+    params = {
+        'documentType': 'A84',                # Balancing prices
+        'ProcessType': 'A67',                 # IF aFRR CBMPs
+        # 'businessType': 'A01',                # Energy
+        'ControlArea_Domain': lfc_area,
+    }
+    response = client_raw._base_request(params=params, start=start, end=end)
+
+    # parse XML
+    root = ET.fromstring(response.text)
+    ns = {'ns': 'urn:iec62325.351:tc57wg16:451-6:balancingdocument:4:1'}
+
+    records = []
+    for ts in root.findall('.//ns:TimeSeries', ns):
+        # direction code A01=Up, A02=Down
+        dir_code = ts.find('ns:flowDirection.direction', ns).text
+        direction = 'Up' if dir_code == 'A01' else 'Down'
+
+        # full-hour interval start + resolution
+        period = ts.find('ns:Period', ns)
+        start_ts = pd.to_datetime(period.find('ns:timeInterval/ns:start', ns).text)
+        res = period.find('ns:resolution', ns).text  # e.g. 'PT4S'
+        step = timedelta(seconds=int(res.replace('PT','').replace('S','')))
+
+        # loop all <Point> entries
+        for pt in period.findall('ns:Point', ns):
+            price_el = pt.find('ns:activation_Price.amount', ns)
+            if price_el is None:
+                continue  # skip MTUs without an activation price
+
+            pos = int(pt.find('ns:position', ns).text)
+            price = float(price_el.text)
+
+            p_start = start_ts + (pos - 1) * step
+            p_end   = p_start + step
+
+            records.append({
+                'PeriodStart':       p_start,
+                'PeriodEnd':         p_end,
+                'Direction':         direction,
+                'Price_EUR_per_MWh': price,
+                'LFC_Area':          lfc_area
+            })
+
+    df = pd.DataFrame(records)
+    df = df.sort_values('PeriodStart').reset_index(drop=True)
+    df_4s = (
+        df
+        .drop_duplicates(subset='PeriodStart', keep='last')   # remove any duplicate timestamps
+        .set_index('PeriodStart')                             # index on the datetime
+        .asfreq('4s', method='pad')                           # snap to every 4 s, pad from last
+        .reset_index()                                        # back to a column
+    )
+
+    # (optional) add the PeriodEnd column
+    df_4s['PeriodEnd'] = df_4s['PeriodStart'] + pd.Timedelta(seconds=4)
+
+    return df_4s
 ########################### UTIL ###########################
 
 def convert_to_local_time(utc_time_str, local_tz='Europe/Zurich'):
